@@ -11,6 +11,9 @@
 
 #include "model_data.h"
 #include "logmel.h"
+#include "norm_stats.h"
+
+static_assert(NORM_NUM_MEL_BINS == LOGMEL_NUM_MEL_BINS, "norm stats must match mel bin count");
 
 
 static const char *TAG = "model_test";
@@ -95,12 +98,15 @@ float inference(const float* logmel_spectrogram, int num_frames)
         return NAN;
     }
 
-    // quantize: q = round(x / scale) + zero_point, clamped to int8 range
+    // normalize per mel bin ((x - mean) / std), then quantize:
+    // q = round(x / scale) + zero_point, clamped to int8 range
     const float inv_scale = 1.0f / s_input->params.scale;
     const int32_t input_zero_point = s_input->params.zero_point;
     int8_t *input_data = s_input->data.int8;
     for (size_t i = 0; i < num_values; i++) {
-        int32_t q = (int32_t)lroundf(logmel_spectrogram[i] * inv_scale) + input_zero_point;
+        const size_t bin = i % LOGMEL_NUM_MEL_BINS;
+        const float x = (logmel_spectrogram[i] - norm_mean[bin]) / norm_std[bin];
+        int32_t q = (int32_t)lroundf(x * inv_scale) + input_zero_point;
         if (q < -128) q = -128;
         if (q > 127) q = 127;
         input_data[i] = (int8_t)q;
