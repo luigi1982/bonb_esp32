@@ -42,23 +42,25 @@ void fill_windowed_frame(const float* samples, int num_samples, int start, float
   dsps_mul_f32(frame_buf, g_hann_window, frame_buf, kFrameLength, 1, 1, 1);
 }
 
-void mel_from_magnitude(const float* magnitude, float* mel_out) {
+void mel_from_power(const float* power, float* mel_out) {
   for (int m = 0; m < kNumMelBins; m++) {
     float acc = 0.0f;
     uint16_t row_start = g_mel_matrix_sparse_col_offsets[m];
     uint16_t row_len = g_mel_matrix_sparse_col_lengths[m];
     for (uint16_t i = 0; i < row_len; i++) {
       const MelMatrixEntry& entry = g_mel_matrix_sparse_cols[row_start + i];
-      acc += magnitude[entry.row_idx] * entry.value;
+      acc += power[entry.row_idx] * entry.value;
     }
-    mel_out[m] = acc; //logf(acc + 1e-6f);
+    mel_out[m] = logf(acc + 1e-6f);
   }
 }
 
 }  // namespace
 
 int logmel_num_frames(int num_samples) {
-  return (num_samples + kFrameStep - 1) / kFrameStep;
+  // no end padding (tf.signal.stft pad_end=False): only frames fully inside the audio
+  if (num_samples < kFrameLength) return 0;
+  return 1 + (num_samples - kFrameLength) / kFrameStep;
 }
 
 void logmel_compute(const float* samples, int num_samples, float* out, int* out_num_frames) {
@@ -78,8 +80,8 @@ void logmel_compute(const float* samples, int num_samples, float* out, int* out_
   static float fft_buf[2 * kFftLength];
   static float frame_a[kFrameLength];
   static float frame_b[kFrameLength];
-  static float magnitude_a[kNumSpectrogramBins];
-  static float magnitude_b[kNumSpectrogramBins];
+  static float power_a[kNumSpectrogramBins];
+  static float power_b[kNumSpectrogramBins];
 
   int frame = 0;
 
@@ -105,12 +107,12 @@ void logmel_compute(const float* samples, int num_samples, float* out, int* out_
     const float* spec_a = fft_buf;
     const float* spec_b = fft_buf + kFftLength;
     for (int b = 0; b < kFftLength / 2; b++) {
-      magnitude_a[b] = sqrtf(spec_a[2 * b] * spec_a[2 * b] + spec_a[2 * b + 1] * spec_a[2 * b + 1]);
-      magnitude_b[b] = sqrtf(spec_b[2 * b] * spec_b[2 * b] + spec_b[2 * b + 1] * spec_b[2 * b + 1]);
+      power_a[b] = spec_a[2 * b] * spec_a[2 * b] + spec_a[2 * b + 1] * spec_a[2 * b + 1];
+      power_b[b] = spec_b[2 * b] * spec_b[2 * b] + spec_b[2 * b + 1] * spec_b[2 * b + 1];
     }
 
-    mel_from_magnitude(magnitude_a, out + frame * kNumMelBins);
-    mel_from_magnitude(magnitude_b, out + (frame + 1) * kNumMelBins);
+    mel_from_power(power_a, out + frame * kNumMelBins);
+    mel_from_power(power_b, out + (frame + 1) * kNumMelBins);
   }
 
   // Trailing odd frame (if num_frames is odd): fall back to a plain
@@ -130,9 +132,9 @@ void logmel_compute(const float* samples, int num_samples, float* out, int* out_
     for (int b = 0; b < kNumSpectrogramBins; b++) {
       const float re = fft_buf[2 * b];
       const float im = fft_buf[2 * b + 1];
-      magnitude_a[b] = sqrtf(re * re + im * im);
+      power_a[b] = re * re + im * im;
     }
 
-    mel_from_magnitude(magnitude_a, out + frame * kNumMelBins);
+    mel_from_power(power_a, out + frame * kNumMelBins);
   }
 }

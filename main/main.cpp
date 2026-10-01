@@ -11,6 +11,7 @@
 #include <esp_timer.h>
 
 #include "logmel.h"
+#include "inference.h"
 
 static const char *TAG = "mic_test";
 
@@ -49,6 +50,11 @@ static void mic_init()
 
 extern "C" void app_main(void)
 {
+    if (!model_init()) {
+        ESP_LOGE(TAG, "model_init() failed, stopping");
+        return;
+    }
+
     mic_init();
     ESP_LOGI(TAG, "Microphone running at %u Hz. Make some noise!", (unsigned)SAMPLE_RATE_HZ);
 
@@ -72,42 +78,43 @@ extern "C" void app_main(void)
 
         // The 24-bit sample sits in the top 24 bits of each 32-bit word -> shift down by 8.
         // Then measure loudness: peak = largest |sample|, avg = mean |sample|.
-        int32_t peak = 0;
-        int64_t sum  = 0;
-        int64_t sqsum = 0;
+
         for (size_t i = 0; i < n; i++) {
             
             int32_t s = raw[i] >> 8;                    // signed 24-bit: -8388608 .. +8388607
-            int32_t a = std::abs(s);
-            if (a > peak) peak = a;
-            sum += a;
-            sqsum += a*a;
-
             // fill samples array for computation of logmel spectrogram
-            samples[i] = s;
+            samples[i] = s / 8388608.0f;
 
         }
-        int32_t avg = (int32_t)(sum / (int64_t)n);
-        long rmse = std::sqrt(sqsum / (int64_t)n);
 
 
-        int64_t t0 = esp_timer_get_time();
+        // compute logmel spectrogram
+        int64_t t0f = esp_timer_get_time();
         logmel_compute(samples, FRAME_SAMPLES, out, &num_frames);
-        int64_t t1 = esp_timer_get_time();
+        int64_t t1f = esp_timer_get_time();
+        float frontend_ms = (t1f - t0f) / 1000.0f;
 
-        float elapsed_ms = (t1 - t0) / 1000.0f;
-        ESP_LOGE(TAG, "elapsed ms: %.2f", elapsed_ms);
+        // pass spectrogram to model and complete forward pass
+        int64_t t0i = esp_timer_get_time();
+        float logit = inference(out, num_frames);
+        int64_t t1i = esp_timer_get_time();
+        float inference_ms = (t1i - t0i) / 1000.0f;
+
+        if (std::isnan(logit)) {
+            ESP_LOGE(TAG, "inference failed");
+        }
 
         // Draw a simple bar (0..40 chars) from the average level. Speech is usually
         // well below full scale, so we scale so ~1/64 of full scale fills the bar.
-        int bar = (int)((int64_t)avg * 40 / (8388608 / 64));
+        int bar = (int)(40/(1 + exp(-logit)));
         if (bar > 40) bar = 40;
         char bar_str[41];
         for (int i = 0; i < 40; i++) bar_str[i] = (i < bar) ? '#' : ' ';
         bar_str[40] = '\0';
 
-        printf("first=%8ld  peak=%7ld  avg=%7ld  rmse=%7ld |%s|\n",
-               (long)(raw[0] >> 8), (long)avg, (long)peak, (long)rmse, bar_str);
+        printf("frontend ms=%5.2f  inference ms=%5.2f  logit=%+8.2f |%s|\n",
+            frontend_ms, inference_ms, logit, bar_str
+        );
 
         vTaskDelay(pdMS_TO_TICKS(520));                  // print ~2 lines/second
     }
