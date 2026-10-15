@@ -21,7 +21,10 @@ static constexpr gpio_num_t I2S_SCK_PIN = GPIO_NUM_17;  // SCK (bit clock)
 static constexpr gpio_num_t I2S_SD_PIN  = GPIO_NUM_18;  // SD  (serial data, mic -> ESP32)
 
 static constexpr uint32_t SAMPLE_RATE_HZ = 16000;       // 16 kHz is plenty for speech
-static constexpr size_t   FRAME_SAMPLES  = 8320;         // samples processed per loop (~520 ms)
+// The model input is 398 frames x 80 mel bins: 398 = 1 + (N - 400) / 160  ->  N = 63920 (~4 s)
+static constexpr int      NUM_FRAMES     = 398;
+static constexpr size_t   FRAME_SAMPLES  = LOGMEL_FRAME_LENGTH + (NUM_FRAMES - 1) * LOGMEL_FRAME_STEP;
+static constexpr size_t   READ_CHUNK     = 1024;          // samples per I2S read
 
 static i2s_chan_handle_t rx_chan = nullptr;
 
@@ -58,33 +61,41 @@ extern "C" void app_main(void)
     mic_init();
     ESP_LOGI(TAG, "Microphone running at %u Hz. Make some noise!", (unsigned)SAMPLE_RATE_HZ);
 
-    static int32_t raw[FRAME_SAMPLES];
+    // ~250 KB of audio + ~125 KB of spectrogram: prefer PSRAM, fall back to internal RAM.
+    static int32_t raw[READ_CHUNK];
     int num_frames = 0;
-    float* samples = (float*)heap_caps_malloc(FRAME_SAMPLES * sizeof(float), MALLOC_CAP_8BIT);
-    float* out = (float*)heap_caps_malloc(150 * LOGMEL_NUM_MEL_BINS * sizeof(float), MALLOC_CAP_8BIT);
+    float* samples = (float*)heap_caps_malloc(FRAME_SAMPLES * sizeof(float), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!samples) samples = (float*)heap_caps_malloc(FRAME_SAMPLES * sizeof(float), MALLOC_CAP_8BIT);
+    float* out = (float*)heap_caps_malloc(NUM_FRAMES * LOGMEL_NUM_MEL_BINS * sizeof(float), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!out) out = (float*)heap_caps_malloc(NUM_FRAMES * LOGMEL_NUM_MEL_BINS * sizeof(float), MALLOC_CAP_8BIT);
+    if (!samples || !out) {
+        ESP_LOGE(TAG, "out of memory for audio / spectrogram buffers");
+        return;
+    }
 
     while (true) {
-        
-        // Block until a full frame of samples has arrived from the mic.
-        size_t bytes_read = 0;
-        esp_err_t err = i2s_channel_read(rx_chan, raw, sizeof(raw), &bytes_read, portMAX_DELAY);
-        if (err != ESP_OK) {
-            ESP_LOGE(TAG, "i2s read failed: %s", esp_err_to_name(err));
-            continue;
-        }
 
-        size_t n = bytes_read / sizeof(int32_t);
-        if (n == 0) continue;
+        // Collect FRAME_SAMPLES samples from the mic, READ_CHUNK at a time.
+        size_t filled = 0;
+        while (filled < FRAME_SAMPLES) {
+            size_t want = FRAME_SAMPLES - filled;
+            if (want > READ_CHUNK) want = READ_CHUNK;
 
-        // The 24-bit sample sits in the top 24 bits of each 32-bit word -> shift down by 8.
-        // Then measure loudness: peak = largest |sample|, avg = mean |sample|.
+            size_t bytes_read = 0;
+            esp_err_t err = i2s_channel_read(rx_chan, raw, want * sizeof(int32_t), &bytes_read, portMAX_DELAY);
+            if (err != ESP_OK) {
+                ESP_LOGE(TAG, "i2s read failed: %s", esp_err_to_name(err));
+                continue;
+            }
 
-        for (size_t i = 0; i < n; i++) {
-            
-            int32_t s = raw[i] >> 8;                    // signed 24-bit: -8388608 .. +8388607
-            // fill samples array for computation of logmel spectrogram
-            samples[i] = s / 8388608.0f;
-
+            // The 24-bit sample sits in the top 24 bits of each 32-bit word -> shift down by 8,
+            // then scale to -1..1 for the log-mel computation.
+            size_t n = bytes_read / sizeof(int32_t);
+            for (size_t i = 0; i < n; i++) {
+                int32_t s = raw[i] >> 8;                // signed 24-bit: -8388608 .. +8388607
+                samples[filled + i] = s / 8388608.0f;
+            }
+            filled += n;
         }
 
 
@@ -96,26 +107,25 @@ extern "C" void app_main(void)
 
         // pass spectrogram to model and complete forward pass
         int64_t t0i = esp_timer_get_time();
-        float logit = inference(out, num_frames);
+        float p_dog = inference(out, num_frames);
         int64_t t1i = esp_timer_get_time();
         float inference_ms = (t1i - t0i) / 1000.0f;
 
-        if (std::isnan(logit)) {
+        if (std::isnan(p_dog)) {
             ESP_LOGE(TAG, "inference failed");
+            continue;
         }
 
-        // Draw a simple bar (0..40 chars) from the average level. Speech is usually
-        // well below full scale, so we scale so ~1/64 of full scale fills the bar.
-        int bar = (int)(2*(40/(1 + exp(-logit)) - 20));
+        // Draw a bar (0..40 chars) proportional to the probability of "dog".
+        int bar = (int)lroundf(p_dog * 40.0f);
         if (bar > 40) bar = 40;
+        if (bar < 0) bar = 0;
         char bar_str[41];
         for (int i = 0; i < 40; i++) bar_str[i] = (i < bar) ? '#' : ' ';
         bar_str[40] = '\0';
 
-        printf("frontend ms=%5.2f  inference ms=%5.2f  logit=%+8.2f |%s|\n",
-            frontend_ms, inference_ms, logit, bar_str
+        printf("frontend ms=%5.2f  inference ms=%5.2f  p(dog)=%5.3f |%s|\n",
+            frontend_ms, inference_ms, p_dog, bar_str
         );
-
-        vTaskDelay(pdMS_TO_TICKS(520));                  // print ~2 lines/second
     }
 }

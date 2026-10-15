@@ -8,6 +8,9 @@
 // tf.signal.linear_to_mel_weight_matrix + log(x + 1e-6), using the fixed
 // mel filterbank exported from the training pipeline (mel_matrix.h).
 //
+// The result is z-normalized with the mean/std of the spectrogram itself
+// (computed over all frames and mel bins), as the model expects.
+//
 // Combined optimization version with:
 // - Precomputed Hann window (avoids redundant trigonometric calculations)
 // - Sparse mel matrix column representation (reduces memory bandwidth in mel multiplication)

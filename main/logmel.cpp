@@ -137,4 +137,23 @@ void logmel_compute(const float* samples, int num_samples, float* out, int* out_
 
     mel_from_power(power_a, out + frame * kNumMelBins);
   }
+
+  // Z-normalize the whole spectrogram with its own statistics (the model no
+  // longer uses fixed per-bin stats): out = (out - mean) / (std + eps), where
+  // mean/std are taken over all num_frames * kNumMelBins values.
+  const int total = num_frames * kNumMelBins;
+  if (total > 0) {
+    float sum = 0.0f;
+    for (int i = 0; i < total; i++) sum += out[i];
+    const float mean = sum / (float)total;
+
+    float sq = 0.0f;  // two-pass variance, numerically stable in float32
+    for (int i = 0; i < total; i++) {
+      const float d = out[i] - mean;
+      sq += d * d;
+    }
+    const float inv_std = 1.0f / (sqrtf(sq / (float)total) + 1e-6f);
+
+    for (int i = 0; i < total; i++) out[i] = (out[i] - mean) * inv_std;
+  }
 }
