@@ -106,7 +106,7 @@ extern "C" void app_main(void)
 
         // Draw a simple bar (0..40 chars) from the average level. Speech is usually
         // well below full scale, so we scale so ~1/64 of full scale fills the bar.
-        int bar = (int)(40/(1 + exp(-logit)));
+        int bar = (int)(2*(40/(1 + exp(-logit)) - 20));
         if (bar > 40) bar = 40;
         char bar_str[41];
         for (int i = 0; i < 40; i++) bar_str[i] = (i < bar) ? '#' : ' ';

@@ -1,4 +1,5 @@
 *.tflite
+model_data.c
 
 # macOS
 .DS_Store
