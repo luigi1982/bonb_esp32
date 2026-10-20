@@ -12,6 +12,8 @@
 
 #include "logmel.h"
 #include "inference.h"
+#include "pant_audio.h"
+#include "freertos/stream_buffer.h"
 
 static const char *TAG = "mic_test";
 
@@ -27,6 +29,11 @@ static constexpr size_t   FRAME_SAMPLES  = LOGMEL_FRAME_LENGTH + (NUM_FRAMES - 1
 static constexpr size_t   READ_CHUNK     = 1024;          // samples per I2S read
 
 static i2s_chan_handle_t rx_chan = nullptr;
+// The mic must be read continuously for the panting detector, even while the
+// bark model is busy (~2.5 s). A reader task owns the I2S channel, feeds the
+// panting detector, and hands the samples to the bark pipeline via this buffer.
+static StreamBufferHandle_t audio_stream = nullptr;
+static constexpr size_t STREAM_BYTES = 16384 * sizeof(int32_t);  // ~1 s of audio
 
 static void mic_init()
 {
@@ -51,6 +58,23 @@ static void mic_init()
     ESP_ERROR_CHECK(i2s_channel_enable(rx_chan));
 }
 
+static void mic_reader_task(void *)
+{
+    static int32_t buf[READ_CHUNK];
+    while (true) {
+        size_t bytes_read = 0;
+        esp_err_t err = i2s_channel_read(rx_chan, buf, sizeof(buf), &bytes_read, portMAX_DELAY);
+        if (err != ESP_OK) {
+            ESP_LOGE(TAG, "i2s read failed: %s", esp_err_to_name(err));
+            pant_audio_reset();
+            continue;
+        }
+        pant_audio_feed(buf, bytes_read / sizeof(int32_t));
+        // Never block: if the bark pipeline is busy the buffer fills and audio is dropped for it.
+        xStreamBufferSend(audio_stream, buf, bytes_read, 0);
+    }
+}
+
 extern "C" void app_main(void)
 {
     if (!model_init()) {
@@ -59,6 +83,13 @@ extern "C" void app_main(void)
     }
 
     mic_init();
+    pant_audio_init();
+    audio_stream = xStreamBufferCreate(STREAM_BYTES, sizeof(int32_t));
+    if (!audio_stream) {
+        ESP_LOGE(TAG, "audio stream buffer allocation failed");
+        return;
+    }
+    xTaskCreate(mic_reader_task, "mic_reader", 4096, nullptr, 6, nullptr);
     ESP_LOGI(TAG, "Microphone running at %u Hz. Make some noise!", (unsigned)SAMPLE_RATE_HZ);
 
     // ~250 KB of audio + ~125 KB of spectrogram: prefer PSRAM, fall back to internal RAM.
@@ -77,16 +108,13 @@ extern "C" void app_main(void)
 
         // Collect FRAME_SAMPLES samples from the mic, READ_CHUNK at a time.
         size_t filled = 0;
+        xStreamBufferReset(audio_stream);   // discard audio from while the model was running
         while (filled < FRAME_SAMPLES) {
             size_t want = FRAME_SAMPLES - filled;
             if (want > READ_CHUNK) want = READ_CHUNK;
 
             size_t bytes_read = 0;
-            esp_err_t err = i2s_channel_read(rx_chan, raw, want * sizeof(int32_t), &bytes_read, portMAX_DELAY);
-            if (err != ESP_OK) {
-                ESP_LOGE(TAG, "i2s read failed: %s", esp_err_to_name(err));
-                continue;
-            }
+            bytes_read = xStreamBufferReceive(audio_stream, raw, want * sizeof(int32_t), portMAX_DELAY);
 
             // The 24-bit sample sits in the top 24 bits of each 32-bit word -> shift down by 8,
             // then scale to -1..1 for the log-mel computation.
