@@ -13,3 +13,6 @@ idf_component_get_property(tflite_lib espressif__esp-tflite-micro COMPONENT_LIB)
 # Drop TFLite's error messages / source paths (MicroPrintf becomes a no-op).
 # PUBLIC so every component including the TFLite headers agrees on it.
 target_compile_definitions(${tflite_lib} PUBLIC TF_LITE_STRIP_ERROR_STRINGS)
+# The component hard-codes -O3; appended later on the command line, -Os wins.
+# (esp_nn/depthwise_conv.cc keeps its per-file -O2 compiler workaround.)
+target_compile_options(${tflite_lib} PRIVATE -Os)
