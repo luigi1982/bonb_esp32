@@ -70,6 +70,30 @@ Designed to match `tf.signal.stft` + `tf.signal.linear_to_mel_weight_matrix` fro
 - Output is already softmaxed: index 0 = dog, index 1 = no-dog
 - 1280 KB tensor arena, allocated from PSRAM (falls back to internal RAM, which will not fit this model)
 
+## Binary size
+
+This pipeline is meant to be integrated into another firmware where flash is tight, so the app binary was trimmed. Measured on an ESP32-S3 (sizes of `build/full_pipeline.bin`, timings averaged over ~12 windows, first window dropped as warm-up):
+
+| Version | Commit | Binary size | Δ vs. baseline | Front end | Inference |
+|---|---|---|---|---|---|
+| Baseline | `f608fe4` | 395,536 B | – | 216.97 ms | 2472.9 ms |
+| + FFT without esp-dsp init tables | `b62c5f2` | 379,168 B | −16,368 B | 216.05 ms | 2472.9 ms |
+| + Strip TFLite error strings | `fbd5604` | 363,008 B | −32,528 B | 216.08 ms | 2468.3 ms |
+| + TFLite at `-Os` (reverted) | `ef46eca` | 350,656 B | −44,880 B | 216.08 ms | 2942.0 ms |
+| + esp-nn at `-Os` | `186ceec` | 346,928 B | −48,608 B | 216.14 ms | 2955.7 ms |
+| **Current: all of the above except TFLite `-Os`** | `b43b7ec` | **359,296 B** | **−36,240 B (−9.2 %)** | 216.04 ms | 2482.4 ms |
+
+What was done:
+
+1. **FFT setup without `dsps_fft2r_init_fc32`** (`main/logmel.cpp`). esp-dsp's init references bit-reversal tables for every FFT size from 16 to 4096 points (~16 KB), so the linker keeps all of them, even though `dsps_bit_rev_fc32` never reads them. The front end now builds the twiddle table itself (`dsps_gen_w_r2_fc32` + `dsps_bit_rev_fc32_ansi`, the same steps as the init) and calls the ESP32-S3 assembly FFT `dsps_fft2r_fc32_aes3_` directly. Costs 2 KB of static RAM for the table and saves 960 B of heap. This ties the code to the ESP32-S3; a `#error` catches other targets.
+2. **`TF_LITE_STRIP_ERROR_STRINGS`** (top-level `CMakeLists.txt`). Removes TFLite Micro's error messages, source file paths and the code that prints them. TFLite failures now return only a status code (the `ESP_LOGE` messages in `inference.cpp` remain). Remove this define when debugging TFLite problems.
+3. **esp-nn compiled with `-Os`** instead of its hard-coded `-O2` (top-level `CMakeLists.txt`). Saves ~3.7 KB for ~14 ms (~0.5 %) more inference time.
+4. **Tried and reverted: TFLite Micro with `-Os`** instead of its hard-coded `-O3`. Saved another ~12 KB but made inference ~19 % slower.
+
+The compiler settings are set in this project's top-level `CMakeLists.txt` (after `project()`), not in `managed_components/`, which the component manager can overwrite. **When integrating into another firmware, copy that block into its top-level `CMakeLists.txt`**, or the savings are lost.
+
+Not yet applied, and better decided in the target firmware's `sdkconfig`: the project still builds with Debug optimization (`-Og`) and assertions enabled. Most of the remaining ~46 KB of string data comes from ESP-IDF itself (log messages, assert text, `esp_err_to_name` tables), so it is controlled by the host firmware's configuration.
+
 ## Project layout
 
 ```
