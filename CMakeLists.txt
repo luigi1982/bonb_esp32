@@ -16,3 +16,7 @@ target_compile_definitions(${tflite_lib} PUBLIC TF_LITE_STRIP_ERROR_STRINGS)
 # The component hard-codes -O3; appended later on the command line, -Os wins.
 # (esp_nn/depthwise_conv.cc keeps its per-file -O2 compiler workaround.)
 target_compile_options(${tflite_lib} PRIVATE -Os)
+
+# Same for esp-nn, which hard-codes -O2.
+idf_component_get_property(esp_nn_lib espressif__esp-nn COMPONENT_LIB)
+target_compile_options(${esp_nn_lib} PRIVATE -Os)
