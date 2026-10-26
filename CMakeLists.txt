@@ -6,3 +6,10 @@ cmake_minimum_required(VERSION 3.16)
 
 include($ENV{IDF_PATH}/tools/cmake/project.cmake)
 project(full_pipeline)
+
+# Flash-size tweaks for esp-tflite-micro (set here, not in managed_components/,
+# which the component manager may overwrite).
+idf_component_get_property(tflite_lib espressif__esp-tflite-micro COMPONENT_LIB)
+# Drop TFLite's error messages / source paths (MicroPrintf becomes a no-op).
+# PUBLIC so every component including the TFLite headers agrees on it.
+target_compile_definitions(${tflite_lib} PUBLIC TF_LITE_STRIP_ERROR_STRINGS)
