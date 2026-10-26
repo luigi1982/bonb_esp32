@@ -16,7 +16,27 @@ constexpr int kNumMelBins = LOGMEL_NUM_MEL_BINS;
 float g_hann_window[kFrameLength];
 bool g_hann_init = false;
 
+// FFT twiddle table, built once by init_fft(). We call the optimized FFT
+// directly with this table instead of using dsps_fft2r_init_fc32 + the
+// dsps_fft2r_fc32 macro: the esp-dsp init references bit-reversal tables for
+// every size from 16 to 4096 points (~16 KB of flash, unused by
+// dsps_bit_rev_fc32), so skipping it keeps them out of the binary.
+#if !(CONFIG_DSP_OPTIMIZED && dsps_fft2r_fc32_aes3_enabled)
+#error "logmel.cpp calls the ESP32-S3 FFT (dsps_fft2r_fc32_aes3_) directly"
+#endif
+alignas(16) float g_fft_w[kFftLength];
 bool g_fft_init = false;
+
+void init_fft() {
+  // Same steps as dsps_fft2r_init_fc32, minus the bit-reversal table setup.
+  ESP_ERROR_CHECK(dsps_gen_w_r2_fc32(g_fft_w, kFftLength));
+  ESP_ERROR_CHECK(dsps_bit_rev_fc32_ansi(g_fft_w, kFftLength >> 1));
+  g_fft_init = true;
+}
+
+inline void fft(float* data) {
+  dsps_fft2r_fc32_aes3_(data, kFftLength, g_fft_w);
+}
 
 void init_hann_window() {
   // NOTE: esp_dsp's dsps_wind_hann_f32 implements the symmetric Hann window
@@ -69,8 +89,7 @@ void logmel_compute(const float* samples, int num_samples, float* out, int* out_
   }
 
   if (!g_fft_init) {
-    ESP_ERROR_CHECK(dsps_fft2r_init_fc32(NULL, kFftLength));
-    g_fft_init = true;
+    init_fft();
   }
 
   const int num_frames = logmel_num_frames(num_samples);
@@ -100,7 +119,7 @@ void logmel_compute(const float* samples, int num_samples, float* out, int* out_
       fft_buf[2 * j + 1] = frame_b[j];
     }
 
-    dsps_fft2r_fc32(fft_buf, kFftLength);
+    fft(fft_buf);
     dsps_bit_rev_fc32(fft_buf, kFftLength);
     dsps_cplx2reC_fc32(fft_buf, kFftLength);
 
@@ -126,7 +145,7 @@ void logmel_compute(const float* samples, int num_samples, float* out, int* out_
       fft_buf[2 * j] = frame_a[j];
     }
 
-    dsps_fft2r_fc32(fft_buf, kFftLength);
+    fft(fft_buf);
     dsps_bit_rev_fc32(fft_buf, kFftLength);
 
     for (int b = 0; b < kNumSpectrogramBins; b++) {
