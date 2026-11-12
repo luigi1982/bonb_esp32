@@ -68,7 +68,7 @@ Designed to match `tf.signal.stft` + `tf.signal.linear_to_mel_weight_matrix` fro
 - Input `[1, 198, 80, 1]` int8 tensor, quantized with the model's scale/zero-point
 - Ops registered: Conv2D, DepthwiseConv2D, FullyConnected, Mean
 - Output is a single int8 logit (`[1, 1]`, no softmax in the model); it is dequantized and passed through a sigmoid to get p(dog)
-- 640 KB tensor arena, allocated from PSRAM (falls back to internal RAM, which will not fit this model)
+- 640 KB tensor arena (655,360 B), of which the model uses 554,428 B (~541 KB, measured at boot), allocated from PSRAM (falls back to internal RAM, which will not fit this model)
 
 ## Binary size
 
@@ -82,7 +82,7 @@ This pipeline is meant to be integrated into another firmware where flash is tig
 | + TFLite at `-Os` (reverted) | `ef46eca` | 350,656 B | −44,880 B | 216.08 ms | 2942.0 ms |
 | + esp-nn at `-Os` | `186ceec` | 346,928 B | −48,608 B | 216.14 ms | 2955.7 ms |
 | All of the above except TFLite `-Os` | `b43b7ec` | 359,296 B | −36,240 B (−9.2 %) | 216.04 ms | 2482.4 ms |
-| **Current: 2 s model (no Softmax op)** | – | **348,176 B** | **−47,360 B (−12.0 %)** | not yet measured | not yet measured |
+| **Current: 2 s model (no Softmax op)** | – | **348,176 B** | **−47,360 B (−12.0 %)** | 107.67 ms | 1235.3 ms |
 
 What was done:
 
@@ -123,5 +123,5 @@ Note: the script's defaults (64 bins, 125 Hz lower edge) differ from the current
 
 ## Status / known issues
 
-- The previous 4 s model took ~2.5 s per inference with the arena in PSRAM; the 2 s model has half the activations and should take roughly half as long, but this has not been measured yet.
+- Inference takes ~1.24 s per 2 s window with the arena in PSRAM (the previous 4 s model took ~2.48 s). Capture and processing run one after the other, so a result is printed every ~3.26 s and audio arriving during processing is not analyzed.
 - Earlier models misclassified human speech as barking; the current model and per-spectrogram normalization are still being evaluated.
