@@ -15,9 +15,10 @@
 static const char *TAG = "model_test";
 
 // Tensor Arena - working memory for the interpreter. The model's activations
-// ([1,199,40,64] int8 = ~500 KB each) don't fit in internal RAM, so the arena
-// is allocated from PSRAM when available.
-constexpr size_t kTensorArenaSize = 1280 * 1024;
+// ([1,99,40,64] int8 = ~250 KB each, two live at a time) don't fit in internal
+// RAM, so the arena is allocated from PSRAM when available. The actual usage
+// is logged by model_init(); trim this to it (plus some margin) if needed.
+constexpr size_t kTensorArenaSize = 640 * 1024;
 static uint8_t *tensor_arena = nullptr;
 
 // state shared between model_init() and inference()
@@ -49,12 +50,11 @@ bool model_init(void)
     }
 
     // register all operations
-    static tflite::MicroMutableOpResolver<5> resolver;
+    static tflite::MicroMutableOpResolver<4> resolver;
     resolver.AddFullyConnected();
     resolver.AddConv2D();
     resolver.AddDepthwiseConv2D();
     resolver.AddMean();
-    resolver.AddSoftmax();
 
     //build the interpreter (static so it outlives this function)
     static tflite::MicroInterpreter interpreter(
@@ -127,14 +127,11 @@ float inference(const float* logmel_spectrogram, int num_frames)
         return NAN;
     }
 
-    // The model ends in a SOFTMAX op, so the two int8 outputs are already
-    // probabilities: [0] = dog, [1] = no-dog. Dequantize and return P(dog).
-    // (Applying another softmax here would squash the result towards 0.5.)
-    const float scale = s_output->params.scale;
-    const int32_t zp = s_output->params.zero_point;
-    const float p_dog = (s_output->data.int8[0] - zp) * scale;
-    const float p_no_dog = (s_output->data.int8[1] - zp) * scale;
-    ESP_LOGD(TAG, "p(dog)=%f p(no-dog)=%f", p_dog, p_no_dog);
+    // The model ends in a FULLY_CONNECTED op with a single output and no
+    // activation: it is the "dog" logit. Dequantize it and apply a sigmoid.
+    const float logit = (s_output->data.int8[0] - s_output->params.zero_point) * s_output->params.scale;
+    const float p_dog = 1.0f / (1.0f + expf(-logit));
+    ESP_LOGD(TAG, "logit=%f p(dog)=%f", logit, p_dog);
 
     return p_dog;
 }

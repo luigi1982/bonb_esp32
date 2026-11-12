@@ -1,10 +1,10 @@
 # ESP32-S3 Dog Bark Detector (full pipeline)
 
-End-to-end audio classification on an ESP32-S3: an INMP441 I2S microphone feeds a log-mel front end, which feeds an int8 TensorFlow Lite Micro model (DS-CNN) that outputs the probability that the last ~4 seconds of audio contain a dog bark.
+End-to-end audio classification on an ESP32-S3: an INMP441 I2S microphone feeds a log-mel front end, which feeds an int8 TensorFlow Lite Micro model (DS-CNN) that outputs the probability that the last ~2 seconds of audio contain a dog bark.
 
 ```
-INMP441 mic ──I2S──► 4 s audio buffer ──► log-mel + z-norm ──► int8 quantize ──► TFLite Micro ──► p(dog)
- (16 kHz, 24-bit)    (63,920 samples)     (398 x 80 floats)                       (DS-CNN)
+INMP441 mic ──I2S──► 2 s audio buffer ──► log-mel + z-norm ──► int8 quantize ──► TFLite Micro ──► sigmoid ──► p(dog)
+ (16 kHz, 24-bit)    (31,920 samples)     (198 x 80 floats)                       (DS-CNN)
 ```
 
 ## Hardware
@@ -42,7 +42,7 @@ idf.py -p <PORT> flash monitor
 
 Make sure PSRAM is enabled (`CONFIG_SPIRAM=y`, octal mode); the committed `sdkconfig` already has this.
 
-Output, one line per 4-second window:
+Output, one line per 2-second window:
 
 ```
 frontend ms=...  inference ms=...  p(dog)=0.123 |#####                                   |
@@ -53,7 +53,7 @@ The bar is 40 characters wide and proportional to `p(dog)`.
 ## How it works
 
 ### Audio capture (`main/main.cpp`)
-Reads 32-bit I2S slots at 16 kHz (mono, left). The 24 valid bits are shifted down and scaled to [-1, 1]. 398 frames × 160-sample hop + 400-sample window = 63,920 samples (~4 s) are collected per inference.
+Reads 32-bit I2S slots at 16 kHz (mono, left). The 24 valid bits are shifted down and scaled to [-1, 1]. 197 × 160-sample hop + 400-sample window = 31,920 samples (~2 s, 198 frames) are collected per inference.
 
 ### Front end (`main/logmel.cpp`)
 Designed to match `tf.signal.stft` + `tf.signal.linear_to_mel_weight_matrix` from training:
@@ -64,11 +64,11 @@ Designed to match `tf.signal.stft` + `tf.signal.linear_to_mel_weight_matrix` fro
 - Optimizations: two real frames are packed into one complex FFT, and the mel matrix is stored sparsely (`main/mel_matrix_sparse_col.h`)
 
 ### Inference (`main/inference.cpp`)
-- Model is embedded as a C array (`main/model_data.c`, derived from `ds_cnn_s__logmel_features_int8.tflite`)
-- Input `[1, 398, 80, 1]`-style int8 tensor, quantized with the model's scale/zero-point
-- Ops registered: Conv2D, DepthwiseConv2D, FullyConnected, Mean, Softmax
-- Output is already softmaxed: index 0 = dog, index 1 = no-dog
-- 1280 KB tensor arena, allocated from PSRAM (falls back to internal RAM, which will not fit this model)
+- Model is embedded as a C array (`main/model_data.c`, generated from `ds_cnn_s-64-64-64-64-64_int8.tflite`)
+- Input `[1, 198, 80, 1]` int8 tensor, quantized with the model's scale/zero-point
+- Ops registered: Conv2D, DepthwiseConv2D, FullyConnected, Mean
+- Output is a single int8 logit (`[1, 1]`, no softmax in the model); it is dequantized and passed through a sigmoid to get p(dog)
+- 640 KB tensor arena, allocated from PSRAM (falls back to internal RAM, which will not fit this model)
 
 ## Binary size
 
@@ -81,7 +81,8 @@ This pipeline is meant to be integrated into another firmware where flash is tig
 | + Strip TFLite error strings | `fbd5604` | 363,008 B | −32,528 B | 216.08 ms | 2468.3 ms |
 | + TFLite at `-Os` (reverted) | `ef46eca` | 350,656 B | −44,880 B | 216.08 ms | 2942.0 ms |
 | + esp-nn at `-Os` | `186ceec` | 346,928 B | −48,608 B | 216.14 ms | 2955.7 ms |
-| **Current: all of the above except TFLite `-Os`** | `b43b7ec` | **359,296 B** | **−36,240 B (−9.2 %)** | 216.04 ms | 2482.4 ms |
+| All of the above except TFLite `-Os` | `b43b7ec` | 359,296 B | −36,240 B (−9.2 %) | 216.04 ms | 2482.4 ms |
+| **Current: 2 s model (no Softmax op)** | – | **348,176 B** | **−47,360 B (−12.0 %)** | not yet measured | not yet measured |
 
 What was done:
 
@@ -106,7 +107,7 @@ main/
   model_data.c/.h            model weights as a C array
   norm_stats.h, norm_stats.json   per-bin stats from an earlier model (unused; the current front end normalizes per spectrogram)
 tools/gen_mel_sparse.py      regenerates mel_matrix_sparse_col.h
-ds_cnn_s__logmel_features_int8.tflite   source model
+ds_cnn_s-64-64-64-64-64_int8.tflite     source model
 ```
 
 ## Regenerating the mel filterbank
@@ -122,5 +123,5 @@ Note: the script's defaults (64 bins, 125 Hz lower edge) differ from the current
 
 ## Status / known issues
 
-- Inference takes roughly 2.5 s per window with the arena in PSRAM, so the loop runs slower than real time per 4 s window plus front end time.
+- The previous 4 s model took ~2.5 s per inference with the arena in PSRAM; the 2 s model has half the activations and should take roughly half as long, but this has not been measured yet.
 - Earlier models misclassified human speech as barking; the current model and per-spectrogram normalization are still being evaluated.

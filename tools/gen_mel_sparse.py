@@ -19,7 +19,7 @@ def main():
     ap.add_argument("--fft-length", type=int, default=512)
     ap.add_argument("--num-mel-bins", type=int, default=64)
     ap.add_argument("--sample-rate", type=int, default=16000)
-    ap.add_argument("--lower-edge", type=float, default=125.0)
+    ap.add_argument("--lower-edge", type=float, default=60.0)
     ap.add_argument("--upper-edge", type=float, default=7600.0)
     ap.add_argument("--out", type=Path,
                     default=Path(__file__).resolve().parent.parent / "main" / "mel_matrix_sparse_col.h")

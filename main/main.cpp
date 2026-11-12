@@ -21,8 +21,8 @@ static constexpr gpio_num_t I2S_SCK_PIN = GPIO_NUM_17;  // SCK (bit clock)
 static constexpr gpio_num_t I2S_SD_PIN  = GPIO_NUM_18;  // SD  (serial data, mic -> ESP32)
 
 static constexpr uint32_t SAMPLE_RATE_HZ = 16000;       // 16 kHz is plenty for speech
-// The model input is 398 frames x 80 mel bins: 398 = 1 + (N - 400) / 160  ->  N = 63920 (~4 s)
-static constexpr int      NUM_FRAMES     = 398;
+// The model input is 198 frames x 80 mel bins: 198 = 1 + (N - 400) / 160  ->  N = 31920 (~2 s)
+static constexpr int      NUM_FRAMES     = 198;
 static constexpr size_t   FRAME_SAMPLES  = LOGMEL_FRAME_LENGTH + (NUM_FRAMES - 1) * LOGMEL_FRAME_STEP;
 static constexpr size_t   READ_CHUNK     = 1024;          // samples per I2S read
 
@@ -61,7 +61,7 @@ extern "C" void app_main(void)
     mic_init();
     ESP_LOGI(TAG, "Microphone running at %u Hz. Make some noise!", (unsigned)SAMPLE_RATE_HZ);
 
-    // ~250 KB of audio + ~125 KB of spectrogram: prefer PSRAM, fall back to internal RAM.
+    // ~125 KB of audio + ~63 KB of spectrogram: prefer PSRAM, fall back to internal RAM.
     static int32_t raw[READ_CHUNK];
     int num_frames = 0;
     float* samples = (float*)heap_caps_malloc(FRAME_SAMPLES * sizeof(float), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
